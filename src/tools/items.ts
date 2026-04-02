@@ -1,7 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { HomeboxClient } from "../client.js";
-import { toolResult, errorResult } from "./helpers.js";
+import { toolResult, errorResult, stripItem, stripItemSummary, ITEM_SECTIONS, type ItemSection } from "./helpers.js";
+
+const itemSectionEnum = z.enum(ITEM_SECTIONS as unknown as [string, ...string[]]);
 
 export function registerItemTools(server: McpServer, client: HomeboxClient) {
   server.tool(
@@ -36,14 +38,17 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
 
   server.tool(
     "get_item",
-    "Get full item details by ID, including all fields, attachments, location, tags, and custom fields.",
+    `Get item details by ID. Use 'include' to request only specific sections and reduce response size. Available sections: ${ITEM_SECTIONS.join(", ")}. Basics (id, name, quantity, archived, description, assetId, timestamps) are always included.`,
     {
       id: z.string().describe("Item ID (UUID)"),
+      include: z.array(itemSectionEnum).optional().describe(
+        "Sections to include. Omit for all sections. Options: fields, tags, attachments, location, purchase, warranty, sold, notes, details",
+      ),
     },
-    async ({ id }) => {
+    async ({ id, include }) => {
       try {
-        const data = await client.request("GET", `/items/${id}`);
-        return toolResult(data);
+        const data = await client.request<Record<string, unknown>>("GET", `/items/${id}`);
+        return toolResult(stripItem(data, include as ItemSection[] | undefined));
       } catch (e) {
         return errorResult(e);
       }
@@ -52,7 +57,7 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
 
   server.tool(
     "create_item",
-    "Create a new item. Returns the created item summary.",
+    "Create a new item. Returns a minimal summary by default (id, name, updatedAt). Set verbose=true for full item.",
     {
       name: z.string().describe("Item name"),
       locationId: z.string().describe("Location ID to place the item in"),
@@ -60,10 +65,11 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
       quantity: z.number().int().optional().describe("Quantity (default 1)"),
       tagIds: z.array(z.string()).optional().describe("Tag IDs to assign"),
       parentId: z.string().optional().describe("Parent item ID for hierarchical items"),
+      verbose: z.boolean().optional().describe("Return full item instead of summary (default false)"),
     },
     async (params) => {
       try {
-        const data = await client.request("POST", "/items", {
+        const data = await client.request<Record<string, unknown>>("POST", "/items", {
           body: {
             name: params.name,
             locationId: params.locationId,
@@ -73,7 +79,7 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
             parentId: params.parentId,
           },
         });
-        return toolResult(data);
+        return toolResult(params.verbose ? data : stripItemSummary(data));
       } catch (e) {
         return errorResult(e);
       }
@@ -82,7 +88,7 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
 
   server.tool(
     "update_item",
-    "Full update of an item. Supports all fields: name, description, location, tags, manufacturer, model number, serial number, purchase info, warranty info, sold info, notes, custom fields, archived status.",
+    "Full update of an item. Returns a minimal summary by default (id, name, updatedAt). Set verbose=true for full item.",
     {
       id: z.string().describe("Item ID (UUID)"),
       name: z.string().optional().describe("Item name"),
@@ -115,6 +121,7 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
         numberValue: z.number().optional(),
         booleanValue: z.boolean().optional(),
       })).optional().describe("Custom fields"),
+      verbose: z.boolean().optional().describe("Return full item instead of summary (default false)"),
     },
     async (params) => {
       try {
@@ -150,8 +157,8 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
           fields: params.fields ?? current.fields,
         };
 
-        const data = await client.request("PUT", `/items/${params.id}`, { body });
-        return toolResult(data);
+        const data = await client.request<Record<string, unknown>>("PUT", `/items/${params.id}`, { body });
+        return toolResult(params.verbose ? data : stripItemSummary(data));
       } catch (e) {
         return errorResult(e);
       }
@@ -160,12 +167,13 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
 
   server.tool(
     "patch_item",
-    "Partial item update - only location, quantity, and tags. Lighter alternative to full update.",
+    "Partial item update - only location, quantity, and tags. Returns minimal summary by default. Set verbose=true for full item.",
     {
       id: z.string().describe("Item ID (UUID)"),
       locationId: z.string().optional().describe("New location ID"),
       quantity: z.number().int().optional().describe("New quantity"),
       tagIds: z.array(z.string()).optional().describe("New tag IDs (replaces all)"),
+      verbose: z.boolean().optional().describe("Return full item instead of summary (default false)"),
     },
     async (params) => {
       try {
@@ -173,8 +181,184 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
         if (params.locationId !== undefined) body.locationId = params.locationId;
         if (params.quantity !== undefined) body.quantity = params.quantity;
         if (params.tagIds !== undefined) body.tagIds = params.tagIds;
-        const data = await client.request("PATCH", `/items/${params.id}`, { body });
-        return toolResult(data);
+        const data = await client.request<Record<string, unknown>>("PATCH", `/items/${params.id}`, { body });
+        return toolResult(params.verbose ? data : stripItemSummary(data));
+      } catch (e) {
+        return errorResult(e);
+      }
+    },
+  );
+
+  server.tool(
+    "patch_fields",
+    "Update only custom fields on an item without affecting other data. Returns the updated fields.",
+    {
+      id: z.string().describe("Item ID (UUID)"),
+      fields: z.array(z.object({
+        name: z.string().describe("Field name"),
+        type: z.string().describe("Field type (text, number, boolean)"),
+        textValue: z.string().optional().describe("Text value"),
+        numberValue: z.number().optional().describe("Number value"),
+        booleanValue: z.boolean().optional().describe("Boolean value"),
+      })).describe("Custom fields to set"),
+    },
+    async ({ id, fields }) => {
+      try {
+        // Get current item to preserve all other data
+        const current = await client.request<Record<string, unknown>>("GET", `/items/${id}`);
+
+        const body: Record<string, unknown> = {
+          id,
+          name: current.name,
+          description: current.description,
+          locationId: (current.location as Record<string, unknown>)?.id,
+          tagIds: ((current.tags as Array<Record<string, unknown>>) ?? []).map((t) => t.id),
+          parentId: (current.parent as Record<string, unknown>)?.id,
+          quantity: current.quantity,
+          insured: current.insured,
+          archived: current.archived,
+          manufacturer: current.manufacturer,
+          modelNumber: current.modelNumber,
+          serialNumber: current.serialNumber,
+          purchaseFrom: current.purchaseFrom,
+          purchasePrice: current.purchasePrice,
+          purchaseTime: current.purchaseTime,
+          soldTo: current.soldTo,
+          soldPrice: current.soldPrice,
+          soldTime: current.soldTime,
+          soldNotes: current.soldNotes,
+          notes: current.notes,
+          lifetimeWarranty: current.lifetimeWarranty,
+          warrantyExpires: current.warrantyExpires,
+          warrantyDetails: current.warrantyDetails,
+          syncChildItemsLocations: current.syncChildItemsLocations,
+          assetId: current.assetId,
+          fields,
+        };
+
+        const data = await client.request<Record<string, unknown>>("PUT", `/items/${id}`, { body });
+        return toolResult({
+          id: data.id,
+          name: data.name,
+          updatedAt: data.updatedAt,
+          fields: data.fields,
+        });
+      } catch (e) {
+        return errorResult(e);
+      }
+    },
+  );
+
+  server.tool(
+    "batch_get_items",
+    "Get multiple items by ID in a single call. Supports the same 'include' filtering as get_item. Max 50 items.",
+    {
+      ids: z.array(z.string()).min(1).max(50).describe("Item IDs (UUIDs)"),
+      include: z.array(itemSectionEnum).optional().describe(
+        "Sections to include per item. Omit for all sections. Options: fields, tags, attachments, location, purchase, warranty, sold, notes, details",
+      ),
+    },
+    async ({ ids, include }) => {
+      try {
+        const results = await Promise.all(
+          ids.map(async (id) => {
+            try {
+              const data = await client.request<Record<string, unknown>>("GET", `/items/${id}`);
+              return stripItem(data, include as ItemSection[] | undefined);
+            } catch (e) {
+              return { id, error: e instanceof Error ? e.message : String(e) };
+            }
+          }),
+        );
+        return toolResult(results);
+      } catch (e) {
+        return errorResult(e);
+      }
+    },
+  );
+
+  server.tool(
+    "batch_update_items",
+    "Update multiple items in a single call. Each item entry requires an id and the fields to update (same as update_item). Returns minimal summaries. Max 50 items.",
+    {
+      items: z.array(z.object({
+        id: z.string().describe("Item ID (UUID)"),
+        name: z.string().optional(),
+        description: z.string().optional(),
+        locationId: z.string().optional(),
+        tagIds: z.array(z.string()).optional(),
+        parentId: z.string().nullable().optional(),
+        quantity: z.number().int().optional(),
+        insured: z.boolean().optional(),
+        archived: z.boolean().optional(),
+        manufacturer: z.string().optional(),
+        modelNumber: z.string().optional(),
+        serialNumber: z.string().optional(),
+        purchaseFrom: z.string().optional(),
+        purchasePrice: z.number().optional(),
+        purchaseTime: z.string().optional(),
+        soldTo: z.string().optional(),
+        soldPrice: z.number().optional(),
+        soldTime: z.string().optional(),
+        soldNotes: z.string().optional(),
+        notes: z.string().optional(),
+        lifetimeWarranty: z.boolean().optional(),
+        warrantyExpires: z.string().optional(),
+        warrantyDetails: z.string().optional(),
+        syncChildItemsLocations: z.boolean().optional(),
+        fields: z.array(z.object({
+          name: z.string(),
+          type: z.string(),
+          textValue: z.string().optional(),
+          numberValue: z.number().optional(),
+          booleanValue: z.boolean().optional(),
+        })).optional(),
+      })).min(1).max(50).describe("Items to update"),
+    },
+    async ({ items }) => {
+      try {
+        const results = await Promise.all(
+          items.map(async (params) => {
+            try {
+              const current = await client.request<Record<string, unknown>>("GET", `/items/${params.id}`);
+
+              const body: Record<string, unknown> = {
+                id: params.id,
+                name: params.name ?? current.name,
+                description: params.description ?? current.description,
+                locationId: params.locationId ?? (current.location as Record<string, unknown>)?.id,
+                tagIds: params.tagIds ?? ((current.tags as Array<Record<string, unknown>>) ?? []).map((t) => t.id),
+                parentId: params.parentId !== undefined ? params.parentId : (current.parent as Record<string, unknown>)?.id,
+                quantity: params.quantity ?? current.quantity,
+                insured: params.insured ?? current.insured,
+                archived: params.archived ?? current.archived,
+                manufacturer: params.manufacturer ?? current.manufacturer,
+                modelNumber: params.modelNumber ?? current.modelNumber,
+                serialNumber: params.serialNumber ?? current.serialNumber,
+                purchaseFrom: params.purchaseFrom ?? current.purchaseFrom,
+                purchasePrice: params.purchasePrice !== undefined ? String(params.purchasePrice) : current.purchasePrice,
+                purchaseTime: params.purchaseTime ?? current.purchaseTime,
+                soldTo: params.soldTo ?? current.soldTo,
+                soldPrice: params.soldPrice !== undefined ? String(params.soldPrice) : current.soldPrice,
+                soldTime: params.soldTime ?? current.soldTime,
+                soldNotes: params.soldNotes ?? current.soldNotes,
+                notes: params.notes ?? current.notes,
+                lifetimeWarranty: params.lifetimeWarranty ?? current.lifetimeWarranty,
+                warrantyExpires: params.warrantyExpires ?? current.warrantyExpires,
+                warrantyDetails: params.warrantyDetails ?? current.warrantyDetails,
+                syncChildItemsLocations: params.syncChildItemsLocations ?? current.syncChildItemsLocations,
+                assetId: current.assetId,
+                fields: params.fields ?? current.fields,
+              };
+
+              const data = await client.request<Record<string, unknown>>("PUT", `/items/${params.id}`, { body });
+              return { ...stripItemSummary(data), success: true };
+            } catch (e) {
+              return { id: params.id, success: false, error: e instanceof Error ? e.message : String(e) };
+            }
+          }),
+        );
+        return toolResult(results);
       } catch (e) {
         return errorResult(e);
       }
