@@ -39,7 +39,7 @@ const SOLD_KEYS = ["soldTo", "soldPrice", "soldTime", "soldNotes"];
 const DETAILS_KEYS = ["manufacturer", "modelNumber", "serialNumber"];
 const BASICS_KEYS = [
   "id", "name", "quantity", "archived", "insured", "assetId",
-  "createdAt", "updatedAt", "description",
+  "createdAt", "updatedAt",
 ];
 
 const SECTION_KEYS: Record<ItemSection, string[]> = {
@@ -47,7 +47,7 @@ const SECTION_KEYS: Record<ItemSection, string[]> = {
   warranty: WARRANTY_KEYS,
   sold: SOLD_KEYS,
   details: DETAILS_KEYS,
-  notes: ["notes"],
+  notes: ["notes", "description"],
   fields: ["fields"],
   tags: ["tags"],
   attachments: ["attachments"],

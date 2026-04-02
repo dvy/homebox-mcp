@@ -38,7 +38,7 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
 
   server.tool(
     "get_item",
-    `Get item details by ID. Use 'include' to request only specific sections and reduce response size. Available sections: ${ITEM_SECTIONS.join(", ")}. Basics (id, name, quantity, archived, description, assetId, timestamps) are always included.`,
+    `Get item details by ID. Use 'include' to request only specific sections and reduce response size. Available sections: ${ITEM_SECTIONS.join(", ")}. Basics (id, name, quantity, archived, assetId, timestamps) are always included. Description is in the 'notes' section.`,
     {
       id: z.string().describe("Item ID (UUID)"),
       include: z.array(itemSectionEnum).optional().describe(
