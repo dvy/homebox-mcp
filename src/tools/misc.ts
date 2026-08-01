@@ -24,7 +24,7 @@ export function registerMiscTools(server: McpServer, client: HomeboxClient) {
     {},
     async () => {
       try {
-        const data = await client.request("GET", "/currency");
+        const data = await client.request("GET", "/currencies");
         return toolResult(data);
       } catch (e) {
         return errorResult(e);

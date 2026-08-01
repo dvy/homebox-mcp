@@ -130,7 +130,7 @@ export function registerTemplateTools(server: McpServer, client: HomeboxClient) 
       templateId: z.string().describe("Template ID"),
       name: z.string().optional().describe("Item name (overrides template default)"),
       description: z.string().optional().describe("Item description"),
-      locationId: z.string().optional().describe("Location ID"),
+      locationId: z.string().describe("Location ID the new item is placed in (required)"),
       quantity: z.number().int().optional().describe("Quantity"),
       tagIds: z.array(z.string()).optional().describe("Tag IDs"),
     },
@@ -139,7 +139,8 @@ export function registerTemplateTools(server: McpServer, client: HomeboxClient) 
         const body: Record<string, unknown> = {};
         if (params.name !== undefined) body.name = params.name;
         if (params.description !== undefined) body.description = params.description;
-        if (params.locationId !== undefined) body.locationId = params.locationId;
+        // The location is the new entity's parent (upstream #1414).
+        body.parentId = params.locationId;
         if (params.quantity !== undefined) body.quantity = params.quantity;
         if (params.tagIds !== undefined) body.tagIds = params.tagIds;
         const data = await client.request("POST", `/templates/${params.templateId}/create-item`, { body });

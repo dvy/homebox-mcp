@@ -1,20 +1,30 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { HomeboxClient } from "../client.js";
-import { toolResult, errorResult } from "./helpers.js";
+import {
+  toolResult,
+  errorResult,
+  buildEntityUpdateBody,
+  resolveEntityTypeId,
+} from "./helpers.js";
 
+// Locations are entities whose entity type has isLocation=true (upstream #1414
+// merged the /locations and /items resources into /entities).
 export function registerLocationTools(server: McpServer, client: HomeboxClient) {
   server.tool(
     "list_locations",
     "List all locations with item counts. Optionally filter to show only top-level locations.",
     {
       filterChildren: z.boolean().optional().describe("If true, only return top-level locations"),
+      q: z.string().optional().describe("Search query string"),
     },
     async (params) => {
       try {
-        const data = await client.request("GET", "/locations", {
+        const data = await client.request("GET", "/entities", {
           params: {
+            isLocation: "true",
             filterChildren: params.filterChildren?.toString(),
+            q: params.q,
           },
         });
         return toolResult(data);
@@ -32,7 +42,7 @@ export function registerLocationTools(server: McpServer, client: HomeboxClient) 
     },
     async ({ id }) => {
       try {
-        const data = await client.request("GET", `/locations/${id}`);
+        const data = await client.request("GET", `/entities/${id}`);
         return toolResult(data);
       } catch (e) {
         return errorResult(e);
@@ -48,7 +58,7 @@ export function registerLocationTools(server: McpServer, client: HomeboxClient) 
     },
     async (params) => {
       try {
-        const data = await client.request("GET", "/locations/tree", {
+        const data = await client.request("GET", "/entities/tree", {
           params: {
             withItems: params.withItems?.toString(),
           },
@@ -70,11 +80,16 @@ export function registerLocationTools(server: McpServer, client: HomeboxClient) 
     },
     async (params) => {
       try {
-        const data = await client.request("POST", "/locations", {
+        // Without an explicit location entity type the server would create an item.
+        const entityTypeId = await resolveEntityTypeId(client, true);
+        const data = await client.request("POST", "/entities", {
           body: {
             name: params.name,
             description: params.description ?? "",
             parentId: params.parentId,
+            entityTypeId,
+            quantity: 1,
+            tagIds: [],
           },
         });
         return toolResult(data);
@@ -95,16 +110,10 @@ export function registerLocationTools(server: McpServer, client: HomeboxClient) 
     },
     async (params) => {
       try {
-        // Get current to merge
-        const current = await client.request<Record<string, unknown>>("GET", `/locations/${params.id}`);
-        const data = await client.request("PUT", `/locations/${params.id}`, {
-          body: {
-            id: params.id,
-            name: params.name ?? current.name,
-            description: params.description ?? current.description,
-            parentId: params.parentId !== undefined ? params.parentId : (current.parent as Record<string, unknown>)?.id,
-          },
-        });
+        // PUT /entities/{id} is a full replace, so merge over the current state.
+        const current = await client.request<Record<string, unknown>>("GET", `/entities/${params.id}`);
+        const body = buildEntityUpdateBody(params, current);
+        const data = await client.request("PUT", `/entities/${params.id}`, { body });
         return toolResult(data);
       } catch (e) {
         return errorResult(e);
@@ -120,8 +129,22 @@ export function registerLocationTools(server: McpServer, client: HomeboxClient) 
     },
     async ({ id }) => {
       try {
-        await client.request("DELETE", `/locations/${id}`);
+        await client.request("DELETE", `/entities/${id}`);
         return toolResult({ success: true, message: `Location ${id} deleted` });
+      } catch (e) {
+        return errorResult(e);
+      }
+    },
+  );
+
+  server.tool(
+    "list_entity_types",
+    "List the group's entity types. Each type's isLocation flag decides whether entities of that type are locations or items.",
+    {},
+    async () => {
+      try {
+        const data = await client.request("GET", "/entity-types");
+        return toolResult(data);
       } catch (e) {
         return errorResult(e);
       }

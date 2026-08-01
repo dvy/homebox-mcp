@@ -1,7 +1,18 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { HomeboxClient } from "../client.js";
-import { toolResult, errorResult } from "./helpers.js";
+import { toolResult, errorResult, buildEntityUpdateBody } from "./helpers.js";
+
+// Homebox merged items and locations into a single "entities" resource
+// (upstream #1414). Items are entities whose entity type has isLocation=false,
+// and an item's location is simply its parent entity.
+const fieldSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  textValue: z.string().optional(),
+  numberValue: z.number().optional(),
+  booleanValue: z.boolean().optional(),
+});
 
 export function registerItemTools(server: McpServer, client: HomeboxClient) {
   server.tool(
@@ -14,17 +25,23 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
       locations: z.array(z.string()).optional().describe("Location IDs to filter by"),
       tags: z.array(z.string()).optional().describe("Tag IDs to filter by"),
       parentIds: z.array(z.string()).optional().describe("Parent item IDs to filter by"),
+      includeArchived: z.boolean().optional().describe("Include archived items (default false)"),
     },
     async (params) => {
       try {
-        const data = await client.request("GET", "/items", {
+        // Locations and parent items are both just parent entities now.
+        const parents = [
+          ...new Set([...(params.locations ?? []), ...(params.parentIds ?? [])]),
+        ];
+        const data = await client.request("GET", "/entities", {
           params: {
             q: params.q,
             page: params.page?.toString(),
             pageSize: (params.pageSize ?? 50).toString(),
-            locations: params.locations,
+            parentIds: parents.length > 0 ? parents : undefined,
             tags: params.tags,
-            parentIds: params.parentIds,
+            isLocation: "false",
+            includeArchived: params.includeArchived?.toString(),
           },
         });
         return toolResult(data);
@@ -42,7 +59,7 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
     },
     async ({ id }) => {
       try {
-        const data = await client.request("GET", `/items/${id}`);
+        const data = await client.request("GET", `/entities/${id}`);
         return toolResult(data);
       } catch (e) {
         return errorResult(e);
@@ -59,18 +76,19 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
       description: z.string().optional().describe("Item description"),
       quantity: z.number().int().optional().describe("Quantity (default 1)"),
       tagIds: z.array(z.string()).optional().describe("Tag IDs to assign"),
-      parentId: z.string().optional().describe("Parent item ID for hierarchical items"),
+      parentId: z.string().optional().describe("Parent item ID for hierarchical items (overrides locationId)"),
+      entityTypeId: z.string().optional().describe("Entity type ID (defaults to the group's item type)"),
     },
     async (params) => {
       try {
-        const data = await client.request("POST", "/items", {
+        const data = await client.request("POST", "/entities", {
           body: {
             name: params.name,
-            locationId: params.locationId,
+            parentId: params.parentId ?? params.locationId,
             description: params.description ?? "",
             quantity: params.quantity ?? 1,
             tagIds: params.tagIds ?? [],
-            parentId: params.parentId,
+            entityTypeId: params.entityTypeId,
           },
         });
         return toolResult(data);
@@ -87,9 +105,9 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
       id: z.string().describe("Item ID (UUID)"),
       name: z.string().optional().describe("Item name"),
       description: z.string().optional().describe("Description"),
-      locationId: z.string().optional().describe("Location ID"),
+      locationId: z.string().optional().describe("Location ID (the item's parent entity)"),
       tagIds: z.array(z.string()).optional().describe("Tag IDs (replaces all tags)"),
-      parentId: z.string().nullable().optional().describe("Parent item ID (null to clear)"),
+      parentId: z.string().nullable().optional().describe("Parent entity ID (null to clear; overrides locationId)"),
       quantity: z.number().int().optional().describe("Quantity"),
       insured: z.boolean().optional().describe("Whether the item is insured"),
       archived: z.boolean().optional().describe("Whether the item is archived"),
@@ -107,50 +125,15 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
       lifetimeWarranty: z.boolean().optional().describe("Has lifetime warranty"),
       warrantyExpires: z.string().optional().describe("Warranty expiry date (ISO 8601)"),
       warrantyDetails: z.string().optional().describe("Warranty details"),
-      syncChildItemsLocations: z.boolean().optional().describe("Sync child items to same location"),
-      fields: z.array(z.object({
-        name: z.string(),
-        type: z.string(),
-        textValue: z.string().optional(),
-        numberValue: z.number().optional(),
-        booleanValue: z.boolean().optional(),
-      })).optional().describe("Custom fields"),
+      syncChildEntityLocations: z.boolean().optional().describe("Move child entities along with this one"),
+      fields: z.array(fieldSchema).optional().describe("Custom fields"),
     },
     async (params) => {
       try {
-        // First get the current item to merge with updates
-        const current = await client.request<Record<string, unknown>>("GET", `/items/${params.id}`);
-
-        const body: Record<string, unknown> = {
-          id: params.id,
-          name: params.name ?? current.name,
-          description: params.description ?? current.description,
-          locationId: params.locationId ?? (current.location as Record<string, unknown>)?.id,
-          tagIds: params.tagIds ?? ((current.tags as Array<Record<string, unknown>>) ?? []).map((t) => t.id),
-          parentId: params.parentId !== undefined ? params.parentId : (current.parent as Record<string, unknown>)?.id,
-          quantity: params.quantity ?? current.quantity,
-          insured: params.insured ?? current.insured,
-          archived: params.archived ?? current.archived,
-          manufacturer: params.manufacturer ?? current.manufacturer,
-          modelNumber: params.modelNumber ?? current.modelNumber,
-          serialNumber: params.serialNumber ?? current.serialNumber,
-          purchaseFrom: params.purchaseFrom ?? current.purchaseFrom,
-          purchasePrice: params.purchasePrice !== undefined ? String(params.purchasePrice) : current.purchasePrice,
-          purchaseTime: params.purchaseTime ?? current.purchaseTime,
-          soldTo: params.soldTo ?? current.soldTo,
-          soldPrice: params.soldPrice !== undefined ? String(params.soldPrice) : current.soldPrice,
-          soldTime: params.soldTime ?? current.soldTime,
-          soldNotes: params.soldNotes ?? current.soldNotes,
-          notes: params.notes ?? current.notes,
-          lifetimeWarranty: params.lifetimeWarranty ?? current.lifetimeWarranty,
-          warrantyExpires: params.warrantyExpires ?? current.warrantyExpires,
-          warrantyDetails: params.warrantyDetails ?? current.warrantyDetails,
-          syncChildItemsLocations: params.syncChildItemsLocations ?? current.syncChildItemsLocations,
-          assetId: current.assetId,
-          fields: params.fields ?? current.fields,
-        };
-
-        const data = await client.request("PUT", `/items/${params.id}`, { body });
+        // PUT /entities/{id} is a full replace, so merge over the current state.
+        const current = await client.request<Record<string, unknown>>("GET", `/entities/${params.id}`);
+        const body = buildEntityUpdateBody(params, current);
+        const data = await client.request("PUT", `/entities/${params.id}`, { body });
         return toolResult(data);
       } catch (e) {
         return errorResult(e);
@@ -163,17 +146,19 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
     "Partial item update - only location, quantity, and tags. Lighter alternative to full update.",
     {
       id: z.string().describe("Item ID (UUID)"),
-      locationId: z.string().optional().describe("New location ID"),
+      locationId: z.string().optional().describe("New location ID (the item's parent entity)"),
+      parentId: z.string().optional().describe("New parent entity ID (overrides locationId)"),
       quantity: z.number().int().optional().describe("New quantity"),
       tagIds: z.array(z.string()).optional().describe("New tag IDs (replaces all)"),
     },
     async (params) => {
       try {
         const body: Record<string, unknown> = { id: params.id };
-        if (params.locationId !== undefined) body.locationId = params.locationId;
+        const parent = params.parentId ?? params.locationId;
+        if (parent !== undefined) body.parentId = parent;
         if (params.quantity !== undefined) body.quantity = params.quantity;
         if (params.tagIds !== undefined) body.tagIds = params.tagIds;
-        const data = await client.request("PATCH", `/items/${params.id}`, { body });
+        const data = await client.request("PATCH", `/entities/${params.id}`, { body });
         return toolResult(data);
       } catch (e) {
         return errorResult(e);
@@ -189,7 +174,7 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
     },
     async ({ id }) => {
       try {
-        await client.request("DELETE", `/items/${id}`);
+        await client.request("DELETE", `/entities/${id}`);
         return toolResult({ success: true, message: `Item ${id} deleted` });
       } catch (e) {
         return errorResult(e);
@@ -209,7 +194,7 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
     },
     async (params) => {
       try {
-        const data = await client.request("POST", `/items/${params.id}/duplicate`, {
+        const data = await client.request("POST", `/entities/${params.id}/duplicate`, {
           body: {
             copyAttachments: params.copyAttachments ?? false,
             copyCustomFields: params.copyCustomFields ?? false,
@@ -232,7 +217,7 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
     },
     async ({ id }) => {
       try {
-        const data = await client.request("GET", `/items/${id}/path`);
+        const data = await client.request("GET", `/entities/${id}/path`);
         return toolResult(data);
       } catch (e) {
         return errorResult(e);
@@ -262,7 +247,7 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
     {},
     async () => {
       try {
-        const data = await client.request("GET", "/items/fields");
+        const data = await client.request("GET", "/entities/fields");
         return toolResult(data);
       } catch (e) {
         return errorResult(e);
@@ -272,11 +257,15 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
 
   server.tool(
     "get_custom_field_values",
-    "Get all custom field name/value pairs used across all items.",
-    {},
-    async () => {
+    "Get all values used for one custom field. Call get_custom_field_names first to discover field names.",
+    {
+      field: z.string().describe("Custom field name (required)"),
+    },
+    async ({ field }) => {
       try {
-        const data = await client.request("GET", "/items/fields/values");
+        const data = await client.request("GET", "/entities/fields/values", {
+          params: { field },
+        });
         return toolResult(data);
       } catch (e) {
         return errorResult(e);
@@ -295,7 +284,7 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
         const formData = new FormData();
         const blob = new Blob([csvContent], { type: "text/csv" });
         formData.append("csv", blob, "import.csv");
-        const data = await client.request("POST", "/items/import", { formData });
+        const data = await client.request("POST", "/entities/import", { formData });
         return toolResult(data);
       } catch (e) {
         return errorResult(e);
@@ -309,7 +298,7 @@ export function registerItemTools(server: McpServer, client: HomeboxClient) {
     {},
     async () => {
       try {
-        const data = await client.request("GET", "/items/export");
+        const data = await client.request("GET", "/entities/export");
         return toolResult({ csv: data });
       } catch (e) {
         return errorResult(e);

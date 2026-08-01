@@ -13,7 +13,7 @@ export function registerAttachmentTools(server: McpServer, client: HomeboxClient
     },
     async ({ itemId, attachmentId }) => {
       try {
-        const data = await client.request("GET", `/items/${itemId}/attachments/${attachmentId}`);
+        const data = await client.request("GET", `/entities/${itemId}/attachments/${attachmentId}`);
         return toolResult(data);
       } catch (e) {
         return errorResult(e);
@@ -39,7 +39,7 @@ export function registerAttachmentTools(server: McpServer, client: HomeboxClient
         formData.append("file", blob, params.filename);
         formData.append("type", params.type ?? "attachment");
         formData.append("name", params.filename);
-        const data = await client.request("POST", `/items/${params.itemId}/attachments`, { formData });
+        const data = await client.request("POST", `/entities/${params.itemId}/attachments`, { formData });
         return toolResult(data);
       } catch (e) {
         return errorResult(e);
@@ -59,7 +59,7 @@ export function registerAttachmentTools(server: McpServer, client: HomeboxClient
     },
     async (params) => {
       try {
-        const data = await client.request("PUT", `/items/${params.itemId}/attachments/${params.attachmentId}`, {
+        const data = await client.request("PUT", `/entities/${params.itemId}/attachments/${params.attachmentId}`, {
           body: {
             title: params.title,
             type: params.type,
@@ -82,7 +82,7 @@ export function registerAttachmentTools(server: McpServer, client: HomeboxClient
     },
     async ({ itemId, attachmentId }) => {
       try {
-        await client.request("DELETE", `/items/${itemId}/attachments/${attachmentId}`);
+        await client.request("DELETE", `/entities/${itemId}/attachments/${attachmentId}`);
         return toolResult({ success: true, message: `Attachment ${attachmentId} deleted` });
       } catch (e) {
         return errorResult(e);
