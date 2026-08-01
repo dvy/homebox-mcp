@@ -14,7 +14,7 @@ export function registerMaintenanceTools(server: McpServer, client: HomeboxClien
     async (params) => {
       try {
         const path = params.itemId
-          ? `/items/${params.itemId}/maintenance`
+          ? `/entities/${params.itemId}/maintenance`
           : "/maintenance";
         const data = await client.request("GET", path, {
           params: { status: params.status },
@@ -39,7 +39,7 @@ export function registerMaintenanceTools(server: McpServer, client: HomeboxClien
     },
     async (params) => {
       try {
-        const data = await client.request("POST", `/items/${params.itemId}/maintenance`, {
+        const data = await client.request("POST", `/entities/${params.itemId}/maintenance`, {
           body: {
             name: params.name,
             description: params.description ?? "",

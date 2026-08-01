@@ -64,20 +64,63 @@ npm install
 npm run build
 ```
 
+## Smoke test
+
+Type-checking cannot catch Homebox API drift — only a real request can. `npm run smoke`
+runs read-only GETs against the configured instance and exits non-zero on the first
+mismatch. It never mutates inventory data.
+
+```bash
+HOMEBOX_URL=... HOMEBOX_USERNAME=... HOMEBOX_PASSWORD=... npm run smoke
+```
+
+Run it after any Homebox upgrade.
+
+## API compatibility
+
+Requires Homebox with the merged **entities** API (upstream PR #1414, post-v0.26.2).
+That release collapsed `/api/v1/items` and `/api/v1/locations` into `/api/v1/entities`:
+a location is an entity whose entity type has `isLocation=true`, and an item's location
+is simply its parent entity. This server's tool names are unchanged, but it will not
+work against older Homebox versions that still serve `/items` and `/locations`.
+
+Notes that follow from the merge:
+- `get_custom_field_values` now requires a `field` argument (the endpoint 422s without it).
+- `create_location` resolves the group's location entity type first; creating an entity
+  without an explicit `entityTypeId` yields an *item*, not a location.
+- `update_item` / `update_location` read the current entity and merge, because
+  `PUT /entities/{id}` is a full replace.
+- `create_item_from_template` requires `locationId` (sent as the entity's `parentId`).
+
+## Response size
+
+Responses are tuned to keep token usage down:
+- JSON is serialized compactly (no pretty-printing).
+- `get_item` / `batch_get_items` take `include` to return only the sections you need
+  (`fields`, `tags`, `attachments`, `location`, `purchase`, `warranty`, `sold`, `notes`,
+  `details`). Basics — id, name, quantity, archived, insured, assetId, timestamps — are
+  always returned. The `location` section carries the item's parent entity.
+- Attachments are compressed to `{id, title, type, primary}`.
+- Mutations (`create_item`, `update_item`, `patch_item`, `batch_update_items`) return
+  `{id, name, updatedAt}`; pass `verbose: true` for the full entity.
+
 ## Tools
 
 ### Items
 - `list_items` - Query items with filtering and pagination
-- `get_item` - Get full item details
+- `get_item` - Get item details, optionally narrowed with `include`
 - `create_item` - Create a new item
 - `update_item` - Full item update (all fields)
 - `patch_item` - Partial update (location, quantity, tags)
+- `patch_fields` - Update only custom fields
+- `batch_get_items` - Get up to 50 items in one call
+- `batch_update_items` - Update up to 50 items in one call
 - `delete_item` - Delete an item
 - `duplicate_item` - Duplicate an item
 - `get_item_path` - Get item's location path
 - `get_item_by_asset_id` - Look up by asset ID
 - `get_custom_field_names` - List custom field names
-- `get_custom_field_values` - List custom field values
+- `get_custom_field_values` - List values for one custom field (requires `field`)
 - `import_items` - Import from CSV
 - `export_items` - Export to CSV
 
@@ -88,6 +131,7 @@ npm run build
 - `create_location` - Create a location
 - `update_location` - Update a location
 - `delete_location` - Delete a location
+- `list_entity_types` - List entity types (`isLocation` decides location vs item)
 
 ### Tags
 - `list_tags`, `get_tag`, `create_tag`, `update_tag`, `delete_tag`
