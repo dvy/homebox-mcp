@@ -13,17 +13,52 @@ import { registerActionTools } from "./actions.js";
 import { registerUserTools } from "./users.js";
 import { registerMiscTools } from "./misc.js";
 
+// Context control. Every registered tool costs tokens in every session, so clients can trim the set:
+//   HOMEBOX_TOOLSETS       comma list of groups to load (default: all). Groups: items, locations, tags,
+//                          maintenance, attachments, templates, statistics, groups, notifiers, actions,
+//                          users, misc
+//   HOMEBOX_EXCLUDE_TOOLS  comma list of individual tool names to leave out
+const GROUPS: Record<string, (server: McpServer, client: HomeboxClient) => void> = {
+  items: registerItemTools,
+  locations: registerLocationTools,
+  tags: registerTagTools,
+  maintenance: registerMaintenanceTools,
+  attachments: registerAttachmentTools,
+  templates: registerTemplateTools,
+  statistics: registerStatisticsTools,
+  groups: registerGroupTools,
+  notifiers: registerNotifierTools,
+  actions: registerActionTools,
+  users: registerUserTools,
+  misc: registerMiscTools,
+};
+
+function csv(value: string | undefined): string[] {
+  return (value ?? "").split(",").map((v) => v.trim()).filter(Boolean);
+}
+
 export function registerAllTools(server: McpServer, client: HomeboxClient) {
-  registerItemTools(server, client);
-  registerLocationTools(server, client);
-  registerTagTools(server, client);
-  registerMaintenanceTools(server, client);
-  registerAttachmentTools(server, client);
-  registerTemplateTools(server, client);
-  registerStatisticsTools(server, client);
-  registerGroupTools(server, client);
-  registerNotifierTools(server, client);
-  registerActionTools(server, client);
-  registerUserTools(server, client);
-  registerMiscTools(server, client);
+  const wanted = csv(process.env.HOMEBOX_TOOLSETS);
+  const unknown = wanted.filter((g) => !(g in GROUPS));
+  if (unknown.length) {
+    throw new Error(`Unknown HOMEBOX_TOOLSETS group(s): ${unknown.join(", ")}. Valid: ${Object.keys(GROUPS).join(", ")}`);
+  }
+  const groups = wanted.length ? wanted : Object.keys(GROUPS);
+
+  const excluded = new Set(csv(process.env.HOMEBOX_EXCLUDE_TOOLS));
+  const target = excluded.size
+    ? new Proxy(server, {
+        get(obj, prop, receiver) {
+          if (prop === "tool") {
+            return (name: string, ...rest: unknown[]) =>
+              excluded.has(name)
+                ? undefined
+                : (obj.tool as (...args: unknown[]) => unknown).call(obj, name, ...rest);
+          }
+          return Reflect.get(obj, prop, receiver);
+        },
+      })
+    : server;
+
+  for (const g of groups) GROUPS[g](target, client);
 }
